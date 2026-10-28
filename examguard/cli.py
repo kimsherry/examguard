@@ -7,8 +7,10 @@ import sys
 import time
 
 from . import __version__
-from .checks import check_processes, run_all
-from .model import Finding, Report
+from .checks import (
+    check_menu_bar, check_processes, check_tcc, run_all, scan_memory_file,
+)
+from .model import Finding, Report, HIGH
 
 
 def _watch_processes(report: Report, seconds: float) -> None:
@@ -24,6 +26,32 @@ def _watch_processes(report: Report, seconds: float) -> None:
                 seen.add(pid)
                 report.add(f)
         time.sleep(0.5)
+
+
+def _menu_bar(report: Report, prov) -> None:
+    """상태 아이템을 2초 간격으로 두 번 읽어 값 변화까지 본다."""
+    if not prov.ax_trusted():
+        report.skip("메뉴바 열거: 손쉬운 사용(Accessibility) 권한 필요")
+        return
+    before = prov.status_items()
+    time.sleep(2)
+    report.add(*check_menu_bar(before, prov.status_items()))
+
+
+def _memory_dump(report: Report, path: str) -> None:
+    if not os.path.isfile(path):
+        report.skip(f"메모리 덤프 없음: {path}")
+        return
+    tokens = scan_memory_file(path)
+    if not tokens:
+        return
+    report.add(Finding(
+        check="memory-private-api",
+        severity=HIGH,
+        subject=os.path.basename(path),
+        detail="메모리 덤프에서 사설 하드웨어 API 심볼 발견: " + ", ".join(tokens),
+        evidence={"path": path, "symbols": tokens},
+    ))
 
 
 def _print_text(report: Report) -> None:
@@ -44,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true", help="JSON 출력")
     p.add_argument("--watch", type=float, default=0.0, metavar="SEC",
                    help="N초 동안 캡처 헬퍼 프로세스를 샘플링")
+    p.add_argument("--memory-dump", metavar="PATH",
+                   help="코어/메모리 덤프에서 사설 API 심볼 스캔 (root로 획득 필요)")
     args = p.parse_args(argv)
 
     from .providers import MacProvider, require_macos
@@ -51,11 +81,21 @@ def main(argv: list[str] | None = None) -> int:
 
     prov = MacProvider()
     report = run_all(prov.windows(), prov.processes(), prov.apps(), os.getpid())
+
+    rows, why = prov.tcc_rows()
+    if why:
+        report.skip(why)
+    report.add(*check_tcc(rows))
+    _menu_bar(report, prov)
+
     if args.watch > 0:
         _watch_processes(report, args.watch)
+    if args.memory_dump:
+        _memory_dump(report, args.memory_dump)
 
     if args.json:
-        print(json.dumps({**report.as_dict(), "version": __version__}, ensure_ascii=False, indent=1))
+        print(json.dumps({**report.as_dict(), "version": __version__},
+                         ensure_ascii=False, indent=1))
     else:
         _print_text(report)
     return 2 if report.high_count else 0

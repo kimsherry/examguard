@@ -87,3 +87,63 @@ class MacProvider:
                 return scan_symbols(f.read(MAX_BINARY_SCAN))
         except OSError:
             return []
+
+    # -- TCC --------------------------------------------------------------
+    def tcc_rows(self) -> tuple[list[dict], str | None]:
+        """(rows, 건너뛴 이유). TCC.db 는 Full Disk Access 없으면 못 읽는다."""
+        import sqlite3
+        from .checks import read_tcc
+
+        paths = [
+            os.path.expanduser("~/Library/Application Support/com.apple.TCC/TCC.db"),
+            "/Library/Application Support/com.apple.TCC/TCC.db",
+        ]
+        rows: list[dict] = []
+        errors = []
+        for p in paths:
+            if not os.path.exists(p):
+                continue
+            try:
+                conn = sqlite3.connect(f"file:{p}?mode=ro&immutable=1", uri=True)
+                try:
+                    rows.extend(read_tcc(conn))
+                finally:
+                    conn.close()
+            except sqlite3.Error as e:
+                errors.append(f"{p}: {e}")
+        if not rows and errors:
+            return [], "TCC 열거: Full Disk Access 필요 (" + "; ".join(errors) + ")"
+        return rows, None
+
+    # -- 메뉴바 상태 아이템 (AX) ------------------------------------------
+    def ax_trusted(self) -> bool:
+        import ApplicationServices as AS
+        return bool(AS.AXIsProcessTrusted())
+
+    def status_items(self) -> list[dict]:
+        import ApplicationServices as AS
+        from AppKit import NSWorkspace
+
+        def attr(el, name):
+            err, val = AS.AXUIElementCopyAttributeValue(el, name, None)
+            return val if err == 0 else None
+
+        out: list[dict] = []
+        for app in NSWorkspace.sharedWorkspace().runningApplications():
+            url = app.executableURL()
+            if url is None:
+                continue
+            pid = int(app.processIdentifier())
+            extras = attr(AS.AXUIElementCreateApplication(pid), "AXExtrasMenuBar")
+            if extras is None:
+                continue
+            for i, child in enumerate(attr(extras, "AXChildren") or []):
+                out.append({
+                    "pid": pid,
+                    "app": app.localizedName() or "",
+                    "path": url.path(),
+                    "index": i,
+                    "title": str(attr(child, "AXTitle") or ""),
+                    "desc": str(attr(child, "AXDescription") or ""),
+                })
+        return out

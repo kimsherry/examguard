@@ -1,8 +1,9 @@
 import unittest
 
 from examguard.checks import (
-    check_dockless, check_private_api, check_processes, check_windows,
-    run_all, scan_symbols, is_system_path,
+    check_dockless, check_menu_bar, check_private_api, check_processes,
+    check_tcc, check_windows, read_tcc, run_all, scan_memory_file,
+    scan_symbols, is_system_path,
 )
 
 
@@ -87,6 +88,109 @@ class DocklessTests(unittest.TestCase):
             {"name": "R", "executable": "/Applications/R.app/x", "policy": "regular"},
             {"name": "S", "executable": "/System/Applications/S.app/x", "policy": "accessory"},
         ]), [])
+
+
+class TccTests(unittest.TestCase):
+    def setUp(self):
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute(
+            "CREATE TABLE access (service TEXT, client TEXT, client_type INT, auth_value INT)"
+        )
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _insert(self, service, client, auth_value=2, client_type=0):
+        self.conn.execute("INSERT INTO access VALUES (?,?,?,?)",
+                          (service, client, client_type, auth_value))
+        self.conn.commit()
+
+    def test_reads_only_interesting_services(self):
+        self._insert("kTCCServiceScreenCapture", "com.a.b")
+        self._insert("kTCCServiceMicrophone", "com.a.b")
+        rows = read_tcc(self.conn)
+        self.assertEqual([r["service"] for r in rows], ["kTCCServiceScreenCapture"])
+
+    def test_missing_table_is_empty(self):
+        import sqlite3
+        self.assertEqual(read_tcc(sqlite3.connect(":memory:")), [])
+
+    def test_both_grants_is_high(self):
+        self._insert("kTCCServiceScreenCapture", "com.cheat.app")
+        self._insert("kTCCServiceAccessibility", "com.cheat.app")
+        out = check_tcc(read_tcc(self.conn))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].severity, "high")
+
+    def test_single_grant_is_info(self):
+        self._insert("kTCCServiceScreenCapture", "com.zoom.app")
+        out = check_tcc(read_tcc(self.conn))
+        self.assertEqual(out[0].severity, "info")
+
+    def test_denied_grant_ignored(self):
+        self._insert("kTCCServiceScreenCapture", "com.a.b", auth_value=0)
+        self.assertEqual(check_tcc(read_tcc(self.conn)), [])
+
+
+def item(pid=10, idx=0, title="", desc="", path="/Applications/X.app/Contents/MacOS/X",
+         app="X"):
+    return {"pid": pid, "index": idx, "title": title, "desc": desc,
+            "path": path, "app": app}
+
+
+class MenuBarTests(unittest.TestCase):
+    def test_impostor_system_wording(self):
+        out = check_menu_bar([], [item(desc="Wi-Fi")])
+        self.assertEqual(out[0].check, "menu-bar-impostor")
+        self.assertEqual(out[0].severity, "high")
+
+    def test_dynamic_value_is_info(self):
+        before = [item(title="3")]
+        after = [item(title="5")]
+        out = check_menu_bar(before, after)
+        self.assertEqual(out[0].check, "menu-bar-dynamic")
+        self.assertEqual(out[0].severity, "info")
+        self.assertIn("3", out[0].subject)
+
+    def test_stable_third_party_item_not_flagged(self):
+        self.assertEqual(check_menu_bar([item(title="Sync")], [item(title="Sync")]), [])
+
+    def test_system_app_ignored(self):
+        out = check_menu_bar([], [item(desc="Battery",
+                                       path="/System/Applications/X.app/Contents/MacOS/X")])
+        self.assertEqual(out, [])
+
+
+class MemoryScanTests(unittest.TestCase):
+    def test_finds_token_across_chunk_boundary(self):
+        import os
+        import tempfile
+        from examguard import checks as c
+        old = c.MEMORY_CHUNK
+        c.MEMORY_CHUNK = 8
+        try:
+            blob = b"xx" + b"IOHIDSystem" + b"yy"
+            with tempfile.NamedTemporaryFile(delete=False) as f:
+                f.write(blob)
+                name = f.name
+            try:
+                self.assertEqual(c.scan_memory_file(name), ["IOHIDSystem"])
+            finally:
+                os.unlink(name)
+        finally:
+            c.MEMORY_CHUNK = old
+
+    def test_clean_dump(self):
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b"\x00" * 100)
+            name = f.name
+        try:
+            self.assertEqual(scan_memory_file(name), [])
+        finally:
+            os.unlink(name)
 
 
 class RunAllTests(unittest.TestCase):

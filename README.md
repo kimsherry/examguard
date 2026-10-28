@@ -11,6 +11,10 @@ macOS 시험 감독용 **은닉 채널 탐지기**. 화면 공유·녹화에 잡
 | `capture-helper-process` | `/usr/sbin/screencapture` 실행 | 화면을 읽는 중 (프로그램이 화면을 캡처) |
 | `private-hardware-api` | 바이너리가 `CoreBrightness` / `KeyboardBrightnessClient` / `IOHIDSystem` 참조 | 화면 밖 하드웨어(백라이트·캡스락 LED)로 신호 전달 |
 | `dockless-app` | 활성화 정책 `accessory`/`prohibited` | Dock·⌘Tab 에 안 뜨는 상주 앱 (참고용, 오탐 많음) |
+| `tcc-grant` | TCC `access` 테이블의 허용 항목 | 화면 기록 + 손쉬운 사용을 **같은 앱**이 둘 다 받았으면 캡처+전역 단축키 조합(high) |
+| `menu-bar-impostor` | AX 로 열거한 남의 상태 아이템 | 서드파티 앱이 `Wi-Fi`/`Battery` 같은 시스템 어휘로 위장 |
+| `menu-bar-dynamic` | 2초 간격 두 샘플의 제목 비교 | 상태 아이템 값이 바뀜 = 정보 전달 채널일 수 있음 |
+| `memory-private-api` | `--memory-dump` 로 준 코어/덤프 | 사설 API 심볼이 메모리에 로드됨 (문자열 난독화 우회) |
 
 세 번째 검사가 핵심이다. 화면 캡처·화면 공유는 프레임버퍼만 가져가므로, 밝기나 LED
 같은 하드웨어 상태 변화는 원리적으로 잡히지 않는다. 그래서 그런 API를 쓰는 앱을
@@ -19,13 +23,26 @@ macOS 시험 감독용 **은닉 채널 탐지기**. 화면 공유·녹화에 잡
 ## 설치 / 실행
 
 ```bash
-pip install pyobjc-framework-Quartz pyobjc-framework-Cocoa
+pip install pyobjc-framework-Quartz pyobjc-framework-Cocoa pyobjc-framework-ApplicationServices
 python -m examguard            # 사람이 읽는 출력
 python -m examguard --json     # 기계용
 python -m examguard --watch 30 # 30초간 캡처 헬퍼 프로세스 샘플링
+sudo python -m examguard --memory-dump /path/to/core   # 덤프까지 스캔
 ```
 
 종료 코드: `0` 깨끗함, `2` high 발견. CI/감독 스크립트에서 그대로 쓸 수 있다.
+
+### v0.2 추가 검사에 필요한 것
+
+- **TCC 열거**: `TCC.db` 읽기에 **Full Disk Access** 필요. 없으면 `[skip]` 으로 표시하고 계속 진행.
+- **메뉴바 열거**: **손쉬운 사용(Accessibility)** 권한 필요. 실행 시간이 2초 늘어난다(두 샘플 비교).
+- **메모리 덤프**: macOS 는 사설 프레임워크를 dyld shared cache 에 올리고 `task_for_pid` 를 막아두므로,
+  다른 프로세스 메모리를 직접 못 읽는다. 감독자가 root 로 덤프를 뜬 뒤 `--memory-dump` 로 넘기는 방식.
+  ```bash
+  sudo lldb -p <pid> -o "process save-core /tmp/target.core"
+  ```
+  정적 심볼 스캔(`private-hardware-api`)은 `LC_LOAD_DYLIB` 경로 문자열 덕분에 링크된 사설 프레임워크도 이미 잡는다.
+  덤프 스캔은 문자열을 난독화/동적 로딩한 경우의 보완책이다.
 
 ## 한계 (먼저 읽기)
 

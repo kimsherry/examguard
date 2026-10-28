@@ -16,6 +16,23 @@ PRIVATE_TOKENS = (b"CoreBrightness", b"KeyboardBrightnessClient", b"IOHIDSystem"
 
 CAPTURE_HELPERS = {"screencapture"}
 
+# TCC 서비스 이름 → 사람이 읽는 이름.
+TCC_SERVICES = {
+    "kTCCServiceScreenCapture": "화면 기록",
+    "kTCCServiceAccessibility": "손쉬운 사용",
+}
+
+# 시스템처럼 보이는 상태 아이템 이름. 서드파티 앱이 이걸 쓰면 위장 신호.
+SYSTEM_STATUS_WORDS = (
+    "wi-fi", "wifi", "battery", "bluetooth", "airdrop", "airpods", "volume",
+    "sound", "focus", "moon", "screen mirroring", "vpn", "time machine",
+    "display", "now playing", "siri", "control center", "input source",
+    "keyboard brightness", "clock", "weather",
+)
+
+MEMORY_CHUNK = 8 * 1024 * 1024
+MEMORY_OVERLAP = 64
+
 
 def scan_symbols(blob: bytes) -> list[str]:
     """바이너리에서 사설 API 심볼 참조를 찾는다 (import 문자열 기준)."""
@@ -116,3 +133,110 @@ def run_all(windows, procs, apps, self_pid: int) -> Report:
     r.add(*check_private_api(apps))
     r.add(*check_dockless(apps))
     return r
+
+
+# --- v0.2: TCC ------------------------------------------------------------
+
+def read_tcc(conn) -> list[dict]:
+    """TCC 데이터베이스에서 관심 서비스의 허용 항목을 읽는다. 실패는 빈 목록."""
+    import sqlite3
+    try:
+        cur = conn.execute(
+            "SELECT service, client, client_type, auth_value FROM access "
+            "WHERE service IN ({})".format(",".join("?" * len(TCC_SERVICES))),
+            tuple(TCC_SERVICES),
+        )
+    except sqlite3.Error:
+        return []
+    return [
+        {"service": s, "client": c, "client_type": t, "auth_value": a}
+        for s, c, t, a in cur.fetchall()
+    ]
+
+
+def check_tcc(rows: list[dict]) -> list[Finding]:
+    """화면 기록 + 손쉬운 사용을 같은 앱이 둘 다 받았으면 캡처+전역단축키 조합이다."""
+    granted: dict[str, set[str]] = {}
+    for r in rows:
+        if r.get("auth_value") != 2:  # 2 = allowed
+            continue
+        service = r.get("service")
+        if service not in TCC_SERVICES:
+            continue
+        granted.setdefault(r.get("client") or "?", set()).add(service)
+
+    out: list[Finding] = []
+    for client, services in sorted(granted.items()):
+        names = sorted(TCC_SERVICES[s] for s in services)
+        both = len(services) == 2
+        out.append(Finding(
+            check="tcc-grant",
+            severity=HIGH if both else INFO,
+            subject=client,
+            detail=("화면 기록 + 손쉬운 사용 동시 허용 (캡처 + 전역 단축키 조합)"
+                    if both else "허용된 권한: " + ", ".join(names)),
+            evidence={"client": client, "services": sorted(services)},
+        ))
+    return out
+
+
+# --- v0.2: 메뉴바 상태 아이템 ---------------------------------------------
+
+def _looks_like_system(label: str) -> bool:
+    low = label.lower()
+    return any(w in low for w in SYSTEM_STATUS_WORDS)
+
+
+def check_menu_bar(before: list[dict], after: list[dict]) -> list[Finding]:
+    """서드파티 앱 상태 아이템 중 시스템 어휘를 쓰거나 값이 바뀌는 것을 찾는다.
+
+    각 항목: {pid, app, path, index, title, desc}
+    """
+    prev = {(i.get("pid"), i.get("index")): i.get("title", "") for i in before}
+    out: list[Finding] = []
+    for item in after:
+        path = item.get("path", "")
+        if not path or is_system_path(path):
+            continue
+        key = (item.get("pid"), item.get("index"))
+        title, desc = item.get("title", ""), item.get("desc", "")
+        label = f"{title} {desc}".strip()
+        app = item.get("app") or os.path.basename(path)
+        changed = key in prev and prev[key] != title
+
+        if _looks_like_system(label):
+            out.append(Finding(
+                check="menu-bar-impostor",
+                severity=HIGH,
+                subject=f"{app}: {label or '(무제)'}",
+                detail="서드파티 앱의 메뉴바 항목이 시스템 아이콘처럼 보이는 이름을 사용",
+                evidence={"pid": item.get("pid"), "title": title,
+                          "desc": desc, "executable": path},
+            ))
+        elif changed:
+            out.append(Finding(
+                check="menu-bar-dynamic",
+                severity=INFO,
+                subject=f"{app}: {prev[key]!r} → {title!r}",
+                detail="메뉴바 항목 값이 샘플 사이에 변경됨 (정보 표시 채널일 수 있음)",
+                evidence={"pid": item.get("pid"), "before": prev[key],
+                          "after": title, "executable": path},
+            ))
+    return out
+
+
+# --- v0.2: 메모리 덤프 -----------------------------------------------------
+
+def scan_memory_file(path: str) -> list[str]:
+    """코어/덤프 파일을 청크로 훑어 사설 API 심볼을 찾는다 (전체 로드 없음)."""
+    found: set[str] = set()
+    tail = b""
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(MEMORY_CHUNK)
+            if not chunk:
+                break
+            found.update(scan_symbols(tail + chunk))
+            tail = (tail + chunk)[-MEMORY_OVERLAP:]
+    return sorted(found)
+

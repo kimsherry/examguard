@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "examguard"
-version = "0.1.0"
+version = "0.2.0"
 description = "macOS exam-integrity scanner for covert answer channels"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 dependencies = []
 
 [project.optional-dependencies]
-macos = ["pyobjc-framework-Quartz", "pyobjc-framework-Cocoa"]
+macos = ["pyobjc-framework-Quartz", "pyobjc-framework-Cocoa", "pyobjc-framework-ApplicationServices"]
 
 [project.scripts]
 examguard = "examguard.cli:main"
