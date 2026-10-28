@@ -28,9 +28,32 @@ python -m examguard            # 사람이 읽는 출력
 python -m examguard --json     # 기계용
 python -m examguard --watch 30 # 30초간 캡처 헬퍼 프로세스 샘플링
 sudo python -m examguard --memory-dump /path/to/core   # 덤프까지 스캔
+python -m examguard --block          # 차단 계획만 출력 (아무것도 안 죽임)
+sudo python -m examguard --block --yes   # 실제 차단
 ```
 
 종료 코드: `0` 깨끗함, `2` high 발견. CI/감독 스크립트에서 그대로 쓸 수 있다.
+
+## 차단 (opt-in)
+
+`--block` 만 주면 **계획만** 출력한다. `--yes` 를 함께 줘야 SIGTERM → (2초 내 안 죽으면) SIGKILL.
+
+```
+차단 계획:
+  - pid 1234 Suspect (Applications/Suspect.app/Contents/MacOS/Suspect) ← 화면 공유에서 제외된 창
+  x pid 42 Mail — 건너뜀: 시스템 경로
+  실제 종료는 --yes 를 추가하세요.
+```
+
+하드 가드 (우회 불가):
+- 시스템 경로(`/System`, `/usr`, `/bin`, `/sbin`) → 차단 안 함
+- `launchd`, `WindowServer`, `Dock`, `Finder`, `SystemUIServer`, `loginwindow`, `sudo`, `sshd` 등 → 차단 안 함
+- `PID <= 1`, 자기 자신, 실행 경로 미확인 → 차단 안 함
+- 차단 가능한 검사는 `capture-excluded-window`, `capture-helper-process`, `private-hardware-api` 뿐
+  (메뉴바/메모리 덤프는 프로세스를 특정하지 못하므로 계획에 안 들어감)
+
+**경고**: 대상 앱이 저장 안 한 데이터를 들고 있으면 같이 날아간다. 시험 시작 전에만 쓰고,
+차단 결과는 JSON(`block_plan`, `block`)으로 남겨 감독 기록으로 보관할 것.
 
 ### v0.2 추가 검사에 필요한 것
 

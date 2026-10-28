@@ -74,6 +74,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="N초 동안 캡처 헬퍼 프로세스를 샘플링")
     p.add_argument("--memory-dump", metavar="PATH",
                    help="코어/메모리 덤프에서 사설 API 심볼 스캔 (root로 획득 필요)")
+    p.add_argument("--block", action="store_true",
+                   help="차단 계획 출력 (실행은 하지 않음)")
+    p.add_argument("--yes", action="store_true",
+                   help="--block 과 함께 쓰면 실제로 SIGTERM/SIGKILL 실행")
     args = p.parse_args(argv)
 
     from .providers import MacProvider, require_macos
@@ -93,9 +97,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.memory_dump:
         _memory_dump(report, args.memory_dump)
 
+    if args.block:
+        from .actions import apply_blocks, block_candidates
+        cands = block_candidates(report.findings, prov.processes())
+        targets = [c for c in cands if c["allowed"]]
+        blocked = [c for c in cands if not c["allowed"]]
+        if not args.json:
+            print("\n차단 계획:")
+            for c in targets:
+                print(f"  - pid {c['pid']} {c['name']} ({c['path']}) ← {c['reason']}")
+            for c in blocked:
+                print(f"  x pid {c['pid']} {c['name']} — 건너뜀: {c['blocked_by']}")
+            if not targets:
+                print("  (대상 없음)")
+        if args.yes and targets:
+            report.add(*apply_blocks(targets))
+        elif targets and not args.json:
+            print("  실제 종료는 --yes 를 추가하세요.")
+
     if args.json:
-        print(json.dumps({**report.as_dict(), "version": __version__},
-                         ensure_ascii=False, indent=1))
+        payload = {**report.as_dict(), "version": __version__}
+        if args.block:
+            payload["block_plan"] = cands
+        print(json.dumps(payload, ensure_ascii=False, indent=1))
     else:
         _print_text(report)
     return 2 if report.high_count else 0

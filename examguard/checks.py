@@ -102,7 +102,7 @@ def check_private_api(apps: list[dict]) -> list[Finding]:
             subject=a.get("name") or os.path.basename(path),
             detail="사설/저수준 하드웨어 API 참조: " + ", ".join(hits),
             evidence={"executable": path, "symbols": hits,
-                      "policy": a.get("policy")},
+                      "policy": a.get("policy"), "pid": a.get("pid")},
         ))
     return out
 

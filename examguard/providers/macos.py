@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-from .checks import scan_symbols
+from ..checks import scan_symbols
 
 MAX_BINARY_SCAN = 64 * 1024 * 1024
 _POLICY = {0: "regular", 1: "accessory", 2: "prohibited"}
@@ -78,6 +78,7 @@ class MacProvider:
                 "executable": path,
                 "policy": _POLICY.get(int(app.activationPolicy()), "unknown"),
                 "symbols": self._symbols(path),
+                "pid": int(app.processIdentifier()),
             })
         return out
 
@@ -92,7 +93,7 @@ class MacProvider:
     def tcc_rows(self) -> tuple[list[dict], str | None]:
         """(rows, 건너뛴 이유). TCC.db 는 Full Disk Access 없으면 못 읽는다."""
         import sqlite3
-        from .checks import read_tcc
+        from ..checks import read_tcc
 
         paths = [
             os.path.expanduser("~/Library/Application Support/com.apple.TCC/TCC.db"),

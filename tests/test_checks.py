@@ -1,5 +1,6 @@
 import unittest
 
+from examguard.actions import apply_blocks, block_candidates
 from examguard.checks import (
     check_dockless, check_menu_bar, check_private_api, check_processes,
     check_tcc, check_windows, read_tcc, run_all, scan_memory_file,
@@ -191,6 +192,65 @@ class MemoryScanTests(unittest.TestCase):
             self.assertEqual(scan_memory_file(name), [])
         finally:
             os.unlink(name)
+
+
+class BlockTests(unittest.TestCase):
+    def _finding(self, pid, path="/Applications/X.app/Contents/MacOS/X", check="capture-excluded-window"):
+        from examguard.model import Finding
+        return Finding(check=check, severity="high", subject="X",
+                       detail="테스트", evidence={"pid": pid, "executable": path})
+
+    def test_allows_normal_app(self):
+        c = block_candidates([self._finding(4242)], [])
+        self.assertTrue(c[0]["allowed"])
+        self.assertEqual(c[0]["pid"], 4242)
+
+    def test_refuses_system_path(self):
+        c = block_candidates(
+            [self._finding(42, "/System/Applications/Mail.app/Contents/MacOS/Mail")], [])
+        self.assertFalse(c[0]["allowed"])
+        self.assertEqual(c[0]["blocked_by"], "시스템 경로")
+
+    def test_refuses_low_pid_and_self(self):
+        import os
+        low = block_candidates([self._finding(1)], [])
+        self.assertEqual(low[0]["blocked_by"], "PID 1 이하")
+        me = block_candidates([self._finding(os.getpid())], [])
+        self.assertEqual(me[0]["blocked_by"], "자기 자신")
+
+    def test_refuses_protected_name(self):
+        c = block_candidates([self._finding(77, "/usr/libexec/WindowServer")], [])
+        self.assertFalse(c[0]["allowed"])
+
+    def test_refuses_missing_pid(self):
+        c = block_candidates([self._finding(None)], [])
+        self.assertEqual(c[0]["blocked_by"], "PID 없음")
+
+    def test_non_blockable_check_ignored(self):
+        c = block_candidates([self._finding(4242, check="menu-bar-dynamic")], [])
+        self.assertEqual(c, [])
+
+    def test_dedupes_same_pid(self):
+        c = block_candidates([self._finding(4242), self._finding(4242)], [])
+        self.assertEqual(len(c), 1)
+
+    def test_apply_skips_disallowed(self):
+        c = block_candidates([self._finding(1)], [])
+        self.assertEqual(apply_blocks(c), [])
+
+    def test_apply_terminates_real_process(self):
+        import subprocess
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            c = block_candidates(
+                [self._finding(proc.pid, "/tmp/sleep")], [])
+            results = apply_blocks(c, grace=1.0)
+            self.assertEqual(len(results), 1)
+            self.assertIn("종료", results[0].detail)
+            proc.wait(timeout=5)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
 
 
 class RunAllTests(unittest.TestCase):
